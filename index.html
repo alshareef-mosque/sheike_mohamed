@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>بث الشيخ – صوت وصورة (WebRTC)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: "Tajawal", system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    video { width: 100%; height: auto; background: #000; border-radius: 1rem; }
+    .card { box-shadow: 0 10px 30px rgba(0,0,0,0.08); border-radius: 1.25rem; }
+    #video { max-height: 70vh; } /* تكبير نافذة الفيديو */
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 text-slate-900">
+  <header class="max-w-5xl mx-auto px-4 pt-8">
+    <div class="flex items-center justify-between">
+      <h1 class="text-2xl md:text-3xl font-bold">🎥 بث الشيخ – صوت وصورة</h1>
+      <a href="#" id="copyLink" class="text-sm md:text-base underline decoration-dashed">نسخ رابط الغرفة</a>
+    </div>
+    <p class="text-slate-600 mt-2">أول شخص يدخل ويضغط «ابدأ البث» يصبح <strong>المضيف (الشيخ)</strong> ويبدأ البث مباشرة. أي شخص يفتح نفس الرابط يشاهد البث فوراً.</p>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 pb-16">
+    <section class="grid md:grid-cols-3 gap-6 mt-6">
+      <div class="md:col-span-2 card bg-white p-4 md:p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 id="roleLabel" class="text-lg font-semibold">وضع المشاهد</h2>
+          <span id="statusBadge" class="text-xs px-3 py-1 rounded-full bg-slate-200">غير متصل</span>
+        </div>
+        <video id="video" playsinline autoplay></video>
+        <div id="tapToPlay" class="hidden mt-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">قد يتطلب المتصفح نقرة للتشغيل. اضغط على الفيديو إذا لم يبدأ.</div>
+      </div>
+
+      <div class="card bg-white p-4 md:p-6">
+        <h3 class="text-lg font-semibold mb-3">التحكم</h3>
+        <div class="grid gap-3">
+          <button id="startBtn" class="w-full py-3 rounded-2xl bg-emerald-600 text-white font-semibold disabled:opacity-40">ابدأ البث (مضيف)</button>
+          <button id="watchBtn" class="w-full py-3 rounded-2xl bg-indigo-600 text-white font-semibold disabled:opacity-40">مشاهدة البث (مشاهد)</button>
+          <button id="switchCamBtn" class="w-full py-3 rounded-2xl bg-slate-800 text-white font-semibold disabled:opacity-40">تبديل الكاميرا</button>
+          <button id="micBtn" class="w-full py-3 rounded-2xl bg-yellow-500 text-white font-semibold disabled:opacity-40">تشغيل/إيقاف المايك</button>
+          <button id="stopBtn" class="w-full py-3 rounded-2xl bg-rose-600 text-white font-semibold disabled:opacity-40">إيقاف البث</button>
+        </div>
+        <div class="mt-5 text-sm text-slate-600">
+          <p class="mb-2">حالة الغرفة: <span id="roomIdLabel" class="font-mono text-slate-900">—</span></p>
+          <p class="mb-2">عدد المشاهدين المتصلين: <span id="viewerCount">0</span></p>
+          <p class="mb-2">نصائح: قد تحتاج لشبكة جيدة. يعتمد على WebRTC + Firebase.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, addDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyB3kwJmx2U02qwTwe6U0zzeMmelJD9QCcc",
+  authDomain: "sheikh-stream.firebaseapp.com",
+  projectId: "sheikh-stream",
+  storageBucket: "sheikh-stream.firebasestorage.app",
+  messagingSenderId: "562544324767",
+  appId: "1:562544324767:web:11c72e51361d9fe85f32aa",
+  measurementId: "G-R3LB1FB75D"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+const videoEl = document.getElementById('video');
+const roleLabel = document.getElementById('roleLabel');
+const statusBadge = document.getElementById('statusBadge');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const watchBtn = document.getElementById('watchBtn');
+const switchCamBtn = document.getElementById('switchCamBtn');
+const micBtn = document.getElementById('micBtn');
+const viewerCountEl = document.getElementById('viewerCount');
+const roomIdLabel = document.getElementById('roomIdLabel');
+const tapToPlay = document.getElementById('tapToPlay');
+const copyLink = document.getElementById('copyLink');
+
+const pcs = new Map();
+let localStream = null;
+let currentFacing = 'user';
+let isHost = false;
+let isMicOn = true;
+
+let roomId = location.hash?.replace('#','').trim() || crypto.randomUUID();
+roomIdLabel.textContent = roomId;
+if (!location.hash) location.hash = roomId;
+
+copyLink.addEventListener('click', async e=>{
+  e.preventDefault();
+  await navigator.clipboard.writeText(location.href);
+  copyLink.textContent = 'تم النسخ ✅';
+  setTimeout(()=>copyLink.textContent='نسخ رابط الغرفة',1500);
+});
+
+function setStatus(text,colorClass='bg-slate-200'){statusBadge.textContent=text; statusBadge.className=`text-xs px-3 py-1 rounded-full ${colorClass}`;}
+function setRoleHost(){ isHost=true; roleLabel.textContent='وضع المضيف (الشيخ)'; }
+function setRoleViewer(){ isHost=false; roleLabel.textContent='وضع المشاهد'; }
+
+const rtcConfig = { iceServers:[{urls:'stun:stun.l.google.com:19302'}] };
+
+// ==================== مضيف ====================
+async function startHost(){
+  setRoleHost();
+  startBtn.disabled=true; watchBtn.disabled=true; switchCamBtn.disabled=false; stopBtn.disabled=false; micBtn.disabled=false;
+
+  localStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:currentFacing}, audio:true});
+  videoEl.srcObject = localStream;
+  videoEl.muted = true; // منع صدى صوت المضيف
+
+  const roomRef = doc(db,'rooms',roomId);
+  await setDoc(roomRef,{hostActive:true,createdAt:Date.now()},{merge:true});
+
+  const viewersCol = collection(roomRef,'viewers');
+  onSnapshot(viewersCol, snap=>{
+    viewerCountEl.textContent = snap.size;
+    snap.docChanges().forEach(async change=>{
+      if(change.type==='added'){
+        await createOfferForViewer(roomRef,change.doc.id);
+      }
+    });
+  });
+
+  setStatus('يبث الآن','bg-emerald-100');
+}
+
+async function createOfferForViewer(roomRef, viewerId){
+  const viewerRef = doc(roomRef,'viewers',viewerId);
+  const pc = new RTCPeerConnection(rtcConfig);
+  pcs.set(viewerId,pc);
+
+  // بث جميع المسارات: فيديو + صوت المضيف + أصوات المشاهدين
+  localStream.getTracks().forEach(track=>pc.addTrack(track,localStream));
+
+  const hostCandidates = collection(viewerRef,'hostCandidates');
+  pc.addEventListener('icecandidate', async e=>{ if(e.candidate) await addDoc(hostCandidates,e.candidate.toJSON()); });
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await setDoc(viewerRef,{offer:{type:offer.type,sdp:offer.sdp},createdAt:Date.now()},{merge:true});
+
+  onSnapshot(viewerRef,snap=>{
+    const data = snap.data();
+    if(data?.answer && !pc.currentRemoteDescription){
+      pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+    }
+  });
+
+  const viewerCandidates = collection(viewerRef,'viewerCandidates');
+  onSnapshot(viewerCandidates, candSnap=>{
+    candSnap.docChanges().forEach(async c=>{
+      if(c.type==='added') await pc.addIceCandidate(new RTCIceCandidate(c.doc.data())).catch(()=>{});
+    });
+  });
+}
+
+async function switchCamera(){
+  if(!localStream) return;
+  currentFacing = currentFacing==='user'?'environment':'user';
+  const newStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:currentFacing}, audio:true});
+  const newVideoTrack = newStream.getVideoTracks()[0];
+  const newAudioTrack = newStream.getAudioTracks()[0];
+
+  pcs.forEach(pc=> pc.getSenders().forEach(s=>{
+    if(s.track.kind==='video') s.replaceTrack(newVideoTrack);
+    if(s.track.kind==='audio') s.replaceTrack(newAudioTrack);
+  }));
+
+  localStream.getTracks().forEach(t=>t.stop());
+  localStream=newStream;
+  videoEl.srcObject=localStream;
+  videoEl.muted = true;
+}
+
+async function stopHost(){
+  stopBtn.disabled=true; switchCamBtn.disabled=true; micBtn.disabled=true;
+  const roomRef = doc(db,'rooms',roomId);
+  await updateDoc(roomRef,{hostActive:false}).catch(()=>{});
+  if(localStream){localStream.getTracks().forEach(t=>t.stop()); localStream=null;}
+  pcs.forEach(pc=>pc.close()); pcs.clear();
+  setStatus('متوقف','bg-slate-200');
+  startBtn.disabled=false; watchBtn.disabled=false;
+  setRoleViewer();
+  videoEl.srcObject=null;
+}
+
+// ==================== مشاهد ====================
+let viewerStream = null;
+let viewerPC = null;
+let localMicStream = null;
+
+async function startViewer(){
+  setRoleViewer();
+  startBtn.disabled=true; watchBtn.disabled=true; switchCamBtn.disabled=true; stopBtn.disabled=true; micBtn.disabled=false;
+
+  const roomRef = doc(db,'rooms',roomId);
+  const roomSnap = await getDoc(roomRef);
+  if(!roomSnap.exists() || !roomSnap.data().hostActive){
+    alert('لا يوجد بث حالياً. انتظر دخول المضيف أو أعد المحاولة.');
+    return;
+  }
+
+  const viewerId = crypto.randomUUID();
+  const viewerRef = doc(roomRef,'viewers',viewerId);
+  await setDoc(viewerRef,{joinedAt:Date.now()},{merge:true});
+
+  viewerPC = new RTCPeerConnection(rtcConfig);
+  viewerStream = new MediaStream();
+
+  viewerPC.addEventListener('track', e=>{
+    e.streams[0].getTracks().forEach(track=> viewerStream.addTrack(track));
+    videoEl.srcObject = viewerStream;
+    setStatus('مشاهدة البث','bg-indigo-100');
+    videoEl.play().catch(()=>tapToPlay.classList.remove('hidden'));
+  });
+
+  viewerPC.addTransceiver('video',{direction:'recvonly'});
+  viewerPC.addTransceiver('audio',{direction:'recvonly'});
+
+  // جلب عرض المضيف
+  onSnapshot(viewerRef, async snap=>{
+    const data = snap.data();
+    if(data?.offer && !viewerPC.currentRemoteDescription){
+      await viewerPC.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await viewerPC.createAnswer();
+      await viewerPC.setLocalDescription(answer);
+      await setDoc(viewerRef,{answer:{type:answer.type,sdp:answer.sdp}},{merge:true});
+    }
+  });
+
+  const viewerCandidates = collection(viewerRef,'viewerCandidates');
+  viewerPC.addEventListener('icecandidate', async e=>{
+    if(e.candidate) await addDoc(viewerCandidates,e.candidate.toJSON());
+  });
+
+  const hostCandidates = collection(viewerRef,'hostCandidates');
+  onSnapshot(hostCandidates, candSnap=>{
+    candSnap.docChanges().forEach(async c=>{
+      if(c.type==='added') await viewerPC.addIceCandidate(new RTCIceCandidate(c.doc.data())).catch(()=>{});
+    });
+  });
+
+  // المايك: المشاهد يرسل صوته إلى المضيف لتوزيعه
+  micBtn.addEventListener('click', async ()=>{
+    if(!localMicStream){
+      localMicStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      localMicStream.getTracks().forEach(track => viewerPC.addTrack(track, localMicStream));
+      micBtn.textContent='إيقاف المايك';
+      isMicOn = true;
+    } else {
+      localMicStream.getAudioTracks().forEach(t => t.enabled = !t.enabled);
+      micBtn.textContent = isMicOn ? 'تشغيل المايك' : 'إيقاف المايك';
+      isMicOn = !isMicOn;
+    }
+  });
+}
+
+startBtn.addEventListener('click', startHost);
+stopBtn.addEventListener('click', stopHost);
+watchBtn.addEventListener('click', startViewer);
+switchCamBtn.addEventListener('click', switchCamera);
+
+videoEl.addEventListener('click', ()=>{ if(videoEl.paused) videoEl.play().catch(()=>{}); });
+videoEl.addEventListener('play', ()=> tapToPlay.classList.add('hidden'));
+videoEl.addEventListener('pause', ()=> tapToPlay.classList.remove('hidden'));
+</script>
+</body>
+</html>
